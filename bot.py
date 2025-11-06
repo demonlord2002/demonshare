@@ -4,7 +4,7 @@ import random
 import string
 from dotenv import load_dotenv
 from pyrogram import Client, filters
-from pyrogram.errors import UserNotParticipant
+from pyrogram.errors import UserNotParticipant, PeerIdInvalid
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
 from pymongo import MongoClient
 from flask import Flask
@@ -31,8 +31,8 @@ API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
-LOG_CHANNEL = int(os.environ.get("LOG_CHANNEL")) 
-UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL") 
+LOG_CHANNEL = os.environ.get("LOG_CHANNEL")  # Can be numeric or public username
+UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL")  # Must be public channel username without @
 
 ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
 ADMINS = [int(admin_id.strip()) for admin_id in ADMIN_IDS_STR.split(',') if admin_id]
@@ -54,6 +54,25 @@ app = Client("FileLinkBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKE
 # ================= Helper Functions =================
 def generate_random_string(length=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
+
+async def resolve_log_channel(client: Client):
+    """
+    Resolve LOG_CHANNEL to a proper numeric ID.
+    Supports both private IDs and public channel usernames.
+    """
+    global LOG_CHANNEL
+    try:
+        # If numeric ID, convert to int
+        if LOG_CHANNEL.isdigit() or LOG_CHANNEL.startswith("-100"):
+            LOG_CHANNEL = int(LOG_CHANNEL)
+        else:
+            # Public username
+            chat = await client.get_chat(LOG_CHANNEL)
+            LOG_CHANNEL = chat.id
+        return LOG_CHANNEL
+    except Exception as e:
+        logging.error(f"Failed to resolve LOG_CHANNEL '{LOG_CHANNEL}': {e}")
+        return None
 
 async def is_user_member(client: Client, user_id: int) -> bool:
     try:
@@ -77,12 +96,11 @@ async def get_bot_mode() -> str:
 async def start_handler(client: Client, message: Message):
     if len(message.command) > 1:
         file_id_str = message.command[1]
-        
+
         if not await is_user_member(client, message.from_user.id):
             join_button = InlineKeyboardButton("🔗 Join Channel", url=f"https://t.me/{UPDATE_CHANNEL}")
             joined_button = InlineKeyboardButton("✅ I Have Joined", callback_data=f"check_join_{file_id_str}")
             keyboard = InlineKeyboardMarkup([[join_button], [joined_button]])
-            
             await message.reply(
                 f"👋 Hello, {message.from_user.first_name}!\n\nTo access this file, please join our update channel first.",
                 reply_markup=keyboard
@@ -92,7 +110,13 @@ async def start_handler(client: Client, message: Message):
         file_record = files_collection.find_one({"_id": file_id_str})
         if file_record:
             try:
-                await client.copy_message(chat_id=message.from_user.id, from_chat_id=LOG_CHANNEL, message_id=file_record['message_id'])
+                log_chat_id = await resolve_log_channel(client)
+                if not log_chat_id:
+                    await message.reply("❌ Cannot resolve LOG_CHANNEL. Contact admin.")
+                    return
+                await client.copy_message(chat_id=message.from_user.id, from_chat_id=log_chat_id, message_id=file_record['message_id'])
+            except PeerIdInvalid:
+                await message.reply("❌ Bot cannot access LOG_CHANNEL. Make sure it's added as admin.")
             except Exception as e:
                 await message.reply(f"❌ Error sending the file.\n`Error: {e}`")
         else:
@@ -112,7 +136,12 @@ async def file_handler(client: Client, message: Message):
     status_msg = await message.reply("⏳ Please wait, uploading the file...", quote=True)
     
     try:
-        forwarded_message = await message.forward(LOG_CHANNEL)
+        log_chat_id = await resolve_log_channel(client)
+        if not log_chat_id:
+            await status_msg.edit_text("❌ Cannot resolve LOG_CHANNEL. Contact admin.")
+            return
+
+        forwarded_message = await message.forward(log_chat_id)
         file_id_str = generate_random_string()
         files_collection.insert_one({'_id': file_id_str, 'message_id': forwarded_message.id})
         bot_username = (await client.get_me()).username
@@ -121,6 +150,8 @@ async def file_handler(client: Client, message: Message):
             f"✅ Link Generated Successfully!\n\n🔗 Your Link: `{share_link}`",
             disable_web_page_preview=True
         )
+    except PeerIdInvalid:
+        await status_msg.edit_text("❌ Bot cannot access LOG_CHANNEL. Make sure it's added as admin.")
     except Exception as e:
         logging.error(f"File handling error: {e}")
         await status_msg.edit_text(f"❌ Error occurred. Please try again.\n`Details: {e}`")
@@ -173,8 +204,14 @@ async def check_join_callback(client: Client, callback_query: CallbackQuery):
         file_record = files_collection.find_one({"_id": file_id_str})
         if file_record:
             try:
-                await client.copy_message(chat_id=user_id, from_chat_id=LOG_CHANNEL, message_id=file_record['message_id'])
+                log_chat_id = await resolve_log_channel(client)
+                if not log_chat_id:
+                    await callback_query.message.edit_text("❌ Cannot resolve LOG_CHANNEL.")
+                    return
+                await client.copy_message(chat_id=user_id, from_chat_id=log_chat_id, message_id=file_record['message_id'])
                 await callback_query.message.delete()
+            except PeerIdInvalid:
+                await callback_query.message.edit_text("❌ Bot cannot access LOG_CHANNEL. Make sure it's added as admin.")
             except Exception as e:
                 await callback_query.message.edit_text(f"❌ Error sending file.\n`Error: {e}`")
         else:
