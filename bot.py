@@ -31,8 +31,8 @@ API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
-LOG_CHANNEL = os.environ.get("LOG_CHANNEL")  # can be numeric ID or username
-UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL")  # must be username without @
+LOG_CHANNEL = os.environ.get("LOG_CHANNEL")  # Numeric ID or public username
+UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL")  # Must be username without @
 
 ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
 ADMINS = [int(a) for a in ADMIN_IDS_STR.split(",") if a]
@@ -69,22 +69,22 @@ async def is_user_member(client: Client, user_id: int) -> bool:
     except:
         return False
 
-async def get_bot_mode() -> str:
-    setting = settings_collection.find_one({"_id": "bot_mode"})
-    if setting:
-        return setting.get("mode", "public")
-    settings_collection.update_one({"_id": "bot_mode"}, {"$set": {"mode": "public"}}, upsert=True)
-    return "public"
+def escape_md2(text: str) -> str:
+    """Escape special characters for Markdown v2"""
+    escape_chars = "_*[]()~`>#+-=|{}.!"
+    for ch in escape_chars:
+        text = text.replace(ch, f"\\{ch}")
+    return text
 
-# ================= Start / Help Messages =================
-START_TEXT = """*PermaStore Bot* 🤖
+# ================= Messages =================
+START_TEXT = escape_md2("""*PermaStore Bot* 🤖
 
 Hey! I am PermaStore Bot.
 
 Send me any file and I will give you a *permanent shareable link* which never expires!
-"""
+""")
 
-HELP_TEXT = """*Here's how to use me:*
+HELP_TEXT = escape_md2("""*Here's how to use me:*
 
 1. Send Files: Send me any file, or forward multiple files at once.
 
@@ -96,24 +96,23 @@ HELP_TEXT = """*Here's how to use me:*
 /start - Restart the bot and clear any session.
 /editlink - Edit an existing link you created.
 /help - Show this help message.
-"""
+""")
 
 # ================= Bot Handlers =================
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
-    user_name = message.from_user.first_name
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")],
         [InlineKeyboardButton("🔗 Join Now", url=f"https://t.me/{UPDATE_CHANNEL}")]
     ])
-    await message.reply(START_TEXT, reply_markup=buttons, parse_mode="markdown")
+    await message.reply(START_TEXT, reply_markup=buttons, parse_mode="markdown_v2")
 
 @app.on_callback_query(filters.regex(r"^help$"))
 async def help_callback(client: Client, callback_query: CallbackQuery):
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("⬅ Back to Start", callback_data="start_back")]
     ])
-    await callback_query.message.edit_text(HELP_TEXT, reply_markup=buttons, parse_mode="markdown")
+    await callback_query.message.edit_text(HELP_TEXT, reply_markup=buttons, parse_mode="markdown_v2")
     await callback_query.answer()
 
 @app.on_callback_query(filters.regex(r"^start_back$"))
@@ -122,7 +121,7 @@ async def start_back_callback(client: Client, callback_query: CallbackQuery):
         [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")],
         [InlineKeyboardButton("🔗 Join Now", url=f"https://t.me/{UPDATE_CHANNEL}")]
     ])
-    await callback_query.message.edit_text(START_TEXT, reply_markup=buttons, parse_mode="markdown")
+    await callback_query.message.edit_text(START_TEXT, reply_markup=buttons, parse_mode="markdown_v2")
     await callback_query.answer()
 
 @app.on_message(filters.private & (filters.document | filters.video | filters.photo | filters.audio))
@@ -144,7 +143,7 @@ async def file_handler(client: Client, message: Message):
         files_collection.insert_one({'_id': file_id, 'message_id': forwarded.id})
         bot_username = (await client.get_me()).username
         share_link = f"https://t.me/{bot_username}?start={file_id}"
-        await status_msg.edit_text(f"✅ File uploaded successfully!\n\n🔗 Permanent Link: `{share_link}`", parse_mode="markdown")
+        await status_msg.edit_text(f"✅ File uploaded successfully!\n\n🔗 Permanent Link: `{escape_md2(share_link)}`", parse_mode="markdown_v2")
     except Exception as e:
         await status_msg.edit_text(f"❌ Error: {e}")
 
