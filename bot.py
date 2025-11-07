@@ -42,7 +42,6 @@ ADMINS = [int(a.strip()) for a in ADMIN_IDS_STR.split(",") if a]
 client = MongoClient(MONGO_URI)
 db = client['file_link_bot']
 files_collection = db['files']
-settings_collection = db['settings']
 batch_collection = db['batch_sessions']  # For batch sessions
 logging.info("✅ MongoDB Connected Successfully!")
 
@@ -73,25 +72,6 @@ async def is_user_member(client: Client, user_id: int) -> bool:
         logging.error(f"Error checking membership for {user_id}: {e}")
         return False
 
-# ================= Messages =================
-START_TEXT = (
-    "**PermaStore Bot 🤖**\n\n"
-    "Send me any file and I'll give you a **permanent shareable link** that never expires."
-)
-
-HELP_TEXT = (
-    "**Here's how to use me:**\n\n"
-    "1. **Send Files:** Send me any file, or forward multiple files at once.\n\n"
-    "2. **Use the Menu:** After you send a file, a menu will appear:\n"
-    "   - 🔗 **Get Free Link:** Creates a permanent link for all files in your batch.\n"
-    "   - ➕ **Add More Files:** Allows you to send more files to the current batch.\n"
-    "   - ❌ **Close:** Clears current batch.\n\n"
-    "**Available Commands:**\n"
-    "/start - Restart the bot and clear any session.\n"
-    "/editlink - Edit an existing link you created.\n"
-    "/help - Show this help message."
-)
-
 # ================= Batch Functions =================
 def get_batch(user_id):
     session = batch_collection.find_one({"user_id": user_id})
@@ -107,12 +87,28 @@ def add_to_batch(user_id, message_id):
 def clear_batch(user_id):
     batch_collection.delete_one({"user_id": user_id})
 
+# ================= Messages =================
+START_TEXT = (
+    "**PermaStore Bot 🤖**\n\n"
+    "Send me any file and I'll give you a **permanent shareable link** that never expires."
+)
+
+HELP_TEXT = (
+    "**Here's how to use me:**\n\n"
+    "1. **Send Files:** Send me any file, or forward multiple files at once.\n"
+    "2. **Use the Menu:** After you send a file, a menu will appear.\n"
+    "   - 🔗 **Get Free Link:** Creates a permanent link for all files in your batch.\n"
+    "   - ➕ **Add More Files:** Add more files to current batch.\n"
+    "   - ❌ **Close:** Clears current batch.\n\n"
+    "**Available Commands:**\n"
+    "/start - Restart the bot.\n"
+    "/help - Show this help message."
+)
+
 # ================= Bot Handlers =================
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")]
-    ])
+    buttons = InlineKeyboardMarkup([[InlineKeyboardButton("📖 How to Use / Help", callback_data="help")]])
     await message.reply(START_TEXT, reply_markup=buttons, parse_mode=ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex(r"^help$"))
@@ -123,15 +119,22 @@ async def help_callback(client: Client, callback_query: CallbackQuery):
 
 @app.on_callback_query(filters.regex(r"^start_back$"))
 async def start_back_callback(client: Client, callback_query: CallbackQuery):
-    buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")]
-    ])
+    buttons = InlineKeyboardMarkup([[InlineKeyboardButton("📖 How to Use / Help", callback_data="help")]])
     await callback_query.message.edit_text(START_TEXT, reply_markup=buttons, parse_mode=ParseMode.MARKDOWN)
     await callback_query.answer()
 
-# ================= File Handler with Batch =================
+# ================= File Handler with Batch & Force Sub =================
 @app.on_message(filters.private & (filters.document | filters.video | filters.photo | filters.audio))
 async def file_handler(client: Client, message: Message):
+    user_id = message.from_user.id
+    if not await is_user_member(client, user_id):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔗 Join Update Channel", url=f"https://t.me/{UPDATE_CHANNEL}")],
+            [InlineKeyboardButton("✅ I Have Joined", callback_data="verify_subscription")]
+        ])
+        await message.reply("❌ You must join our update channel to upload files.", reply_markup=keyboard)
+        return
+
     status_msg = await message.reply("⏳ Processing your file...", parse_mode=ParseMode.MARKDOWN)
     try:
         log_channel_id = await resolve_channel(client, LOG_CHANNEL)
@@ -140,10 +143,9 @@ async def file_handler(client: Client, message: Message):
             return
 
         forwarded = await message.forward(log_channel_id)
-        add_to_batch(message.from_user.id, forwarded.id)
-        batch_files = get_batch(message.from_user.id)
+        add_to_batch(user_id, forwarded.id)
+        batch_files = get_batch(user_id)
 
-        # Vertical button layout
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔗 Get Free Link", callback_data="get_free_link")],
             [InlineKeyboardButton("➕ Add More File", callback_data="add_more_files")],
@@ -155,11 +157,19 @@ async def file_handler(client: Client, message: Message):
             reply_markup=buttons,
             parse_mode=ParseMode.MARKDOWN
         )
-
     except Exception as e:
-        await status_msg.edit_text(f"**❌ Error occurred: {e}**", parse_mode=ParseMode.MARKDOWN)
+        await status_msg.edit_text(f"❌ Error occurred: {e}", parse_mode=ParseMode.MARKDOWN)
 
-# ================= Callback Handlers for Batch =================
+# ================= Callback Handlers =================
+@app.on_callback_query(filters.regex(r"^verify_subscription$"))
+async def verify_subscription(client: Client, callback_query: CallbackQuery):
+    user_id = callback_query.from_user.id
+    if await is_user_member(client, user_id):
+        await callback_query.answer("✅ Subscription verified! You can now upload files.", show_alert=True)
+        await callback_query.message.delete()
+    else:
+        await callback_query.answer("❌ You haven't joined yet.", show_alert=True)
+
 @app.on_callback_query(filters.regex(r"^get_free_link$"))
 async def get_free_link(client: Client, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
@@ -168,12 +178,9 @@ async def get_free_link(client: Client, callback_query: CallbackQuery):
         await callback_query.answer("❌ Your batch is empty!", show_alert=True)
         return
 
-    # Generate batch ID
     batch_id = generate_random_string()
     files_collection.insert_one({"_id": batch_id, "message_id": batch_files})
-
-    # Use your bot t.me link format
-    bot_username = "ElyraMusicBot"  # Change here to your bot username
+    bot_username = "ElyraMusicBot"  # Your bot username
     share_link = f"https://t.me/{bot_username}?start={batch_id}"
 
     await callback_query.message.edit_text(
@@ -185,7 +192,10 @@ async def get_free_link(client: Client, callback_query: CallbackQuery):
 
 @app.on_callback_query(filters.regex(r"^add_more_files$"))
 async def add_more_files(client: Client, callback_query: CallbackQuery):
-    await callback_query.message.edit_text("✅ OK! Send me more files to add to your batch.", parse_mode=ParseMode.MARKDOWN)
+    await callback_query.message.edit_text(
+        "✅ OK! Send me more files to add to your batch.",
+        parse_mode=ParseMode.MARKDOWN
+    )
     await callback_query.answer()
 
 @app.on_callback_query(filters.regex(r"^close_batch$"))
