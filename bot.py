@@ -4,7 +4,7 @@ import random
 import string
 from dotenv import load_dotenv
 from pyrogram import Client, filters
-from pyrogram.errors import UserNotParticipant
+from pyrogram.errors import UserNotParticipant, PeerIdInvalid, ChatAdminRequired
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
 from pymongo import MongoClient
 from flask import Flask
@@ -55,32 +55,24 @@ app = Client("FileLinkBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKE
 def generate_random_string(length=6):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
-async def resolve_log_channel(client: Client):
+async def resolve_channel(client: Client, channel_identifier: str):
     """
-    Resolve LOG_CHANNEL to numeric ID.
-    Supports both numeric IDs (-100...) and public usernames.
+    Resolves a channel that can be either numeric ID or public username.
+    Returns numeric ID if resolved, else None.
     """
-    global LOG_CHANNEL
     try:
-        log_channel_str = str(LOG_CHANNEL)
-        if log_channel_str.startswith("-100") or log_channel_str.isdigit():
-            LOG_CHANNEL = int(log_channel_str)
-        else:
-            chat = await client.get_chat(log_channel_str)
-            LOG_CHANNEL = chat.id
-
-        # Check if bot can send messages
-        bot_member = await client.get_chat_member(LOG_CHANNEL, (await client.get_me()).id)
-        if bot_member.status not in ["administrator", "creator"]:
-            logging.warning(f"Bot is not admin in LOG_CHANNEL {LOG_CHANNEL}. Forwarding may fail!")
-
-        return LOG_CHANNEL
-
+        if str(channel_identifier).startswith("-100") or str(channel_identifier).isdigit():
+            return int(channel_identifier)
+        chat = await client.get_chat(channel_identifier)
+        return chat.id
     except Exception as e:
-        logging.error(f"Failed to resolve LOG_CHANNEL '{LOG_CHANNEL}': {e}")
+        logging.error(f"Failed to resolve channel '{channel_identifier}': {e}")
         return None
 
 async def is_user_member(client: Client, user_id: int) -> bool:
+    """
+    Check if a user is member of the UPDATE_CHANNEL.
+    """
     try:
         await client.get_chat_member(chat_id=f"@{UPDATE_CHANNEL}", user_id=user_id)
         return True
@@ -91,6 +83,9 @@ async def is_user_member(client: Client, user_id: int) -> bool:
         return False
 
 async def get_bot_mode() -> str:
+    """
+    Fetch bot mode from MongoDB, default is 'public'.
+    """
     setting = settings_collection.find_one({"_id": "bot_mode"})
     if setting:
         return setting.get("mode", "public")
@@ -100,23 +95,24 @@ async def get_bot_mode() -> str:
 # ================= Bot Handlers =================
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
+    user_name = message.from_user.first_name
     if len(message.command) > 1:
         file_id_str = message.command[1]
 
         if not await is_user_member(client, message.from_user.id):
-            join_button = InlineKeyboardButton("🔗 Join Channel", url=f"https://t.me/{UPDATE_CHANNEL}")
-            joined_button = InlineKeyboardButton("✅ I Have Joined", callback_data=f"check_join_{file_id_str}")
-            keyboard = InlineKeyboardMarkup([[join_button], [joined_button]])
-
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔗 Join Channel", url=f"https://t.me/{UPDATE_CHANNEL}")],
+                [InlineKeyboardButton("✅ I Have Joined", callback_data=f"check_join_{file_id_str}")]
+            ])
             await message.reply(
-                f"👋 Hello, {message.from_user.first_name}!\n\nTo access this file, please join our update channel first.",
+                f"👋 Hello, {user_name}!\n\nTo access this file, please join our update channel first.",
                 reply_markup=keyboard
             )
             return
 
         file_record = files_collection.find_one({"_id": file_id_str})
         if file_record:
-            log_channel_id = await resolve_log_channel(client)
+            log_channel_id = await resolve_channel(client, LOG_CHANNEL)
             if not log_channel_id:
                 await message.reply("❌ LOG_CHANNEL not resolved. Contact admin.")
                 return
@@ -143,7 +139,7 @@ async def file_handler(client: Client, message: Message):
     status_msg = await message.reply("⏳ Please wait, uploading the file...", quote=True)
 
     try:
-        log_channel_id = await resolve_log_channel(client)
+        log_channel_id = await resolve_channel(client, LOG_CHANNEL)
         if not log_channel_id:
             await status_msg.edit_text("❌ LOG_CHANNEL not resolved. Contact admin.")
             return
@@ -168,15 +164,15 @@ async def settings_handler(client: Client, message: Message):
         return
 
     current_mode = await get_bot_mode()
-    public_button = InlineKeyboardButton("🌍 Public (Anyone)", callback_data="set_mode_public")
-    private_button = InlineKeyboardButton("🔒 Private (Admins Only)", callback_data="set_mode_private")
-    keyboard = InlineKeyboardMarkup([[public_button], [private_button]])
-
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌍 Public (Anyone)", callback_data="set_mode_public")],
+        [InlineKeyboardButton("🔒 Private (Admins Only)", callback_data="set_mode_private")]
+    ])
     await message.reply(
         f"⚙️ Bot Settings\n\nCurrent file upload mode: **{current_mode.upper()}**\n\n"
-        f"**Public:** Anyone can upload files.\n"
-        f"**Private:** Only admins can upload files.\n\n"
-        f"Select a new mode:",
+        "**Public:** Anyone can upload files.\n"
+        "**Private:** Only admins can upload files.\n\n"
+        "Select a new mode:",
         reply_markup=keyboard
     )
 
@@ -190,10 +186,10 @@ async def set_mode_callback(client: Client, callback_query: CallbackQuery):
     settings_collection.update_one({"_id": "bot_mode"}, {"$set": {"mode": new_mode}}, upsert=True)
     await callback_query.answer(f"Mode set to {new_mode.upper()}!", show_alert=True)
 
-    public_button = InlineKeyboardButton("🌍 Public (Anyone)", callback_data="set_mode_public")
-    private_button = InlineKeyboardButton("🔒 Private (Admins Only)", callback_data="set_mode_private")
-    keyboard = InlineKeyboardMarkup([[public_button], [private_button]])
-
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🌍 Public (Anyone)", callback_data="set_mode_public")],
+        [InlineKeyboardButton("🔒 Private (Admins Only)", callback_data="set_mode_private")]
+    ])
     await callback_query.message.edit_text(
         f"⚙️ Bot Settings\n\n✅ File upload mode is now **{new_mode.upper()}**.\n\nSelect a new mode:",
         reply_markup=keyboard
@@ -208,7 +204,7 @@ async def check_join_callback(client: Client, callback_query: CallbackQuery):
         await callback_query.answer("Thanks for joining! Sending your file...", show_alert=True)
         file_record = files_collection.find_one({"_id": file_id_str})
         if file_record:
-            log_channel_id = await resolve_log_channel(client)
+            log_channel_id = await resolve_channel(client, LOG_CHANNEL)
             if not log_channel_id:
                 await callback_query.message.edit_text("❌ LOG_CHANNEL not resolved. Contact admin.")
                 return
@@ -235,4 +231,3 @@ if __name__ == "__main__":
 
     logging.info("Bot is starting...")
     app.run()
-    logging.info("Bot has stopped.")
