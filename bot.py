@@ -3,12 +3,15 @@ import logging
 import random
 import string
 from dotenv import load_dotenv
+from threading import Thread
+
 from pyrogram import Client, filters
 from pyrogram.errors import UserNotParticipant
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
+from pyrogram.enums import ParseMode
+
 from pymongo import MongoClient
 from flask import Flask
-from threading import Thread
 
 # ================= Flask Web Server =================
 flask_app = Flask(__name__)
@@ -31,7 +34,7 @@ API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
 LOG_CHANNEL = os.environ.get("LOG_CHANNEL")
-UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL")  # username without @
+UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL")
 ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
 ADMINS = [int(a.strip()) for a in ADMIN_IDS_STR.split(",") if a]
 
@@ -70,56 +73,53 @@ async def is_user_member(client: Client, user_id: int) -> bool:
         return False
 
 # ================= Messages =================
-START_TEXT = "_🤖 Welcome to PermaStore Bot!_\n\nSend me any file, and I will give you a *permanent shareable link* that never expires!"
-HELP_TEXT = "_Here's how to use me:_\n1. Send any file (document, video, photo, audio).\n2. Receive a permanent link.\n3. Click the link to get your file anytime."
+START_TEXT = "**🤖 Welcome to PermaStore Bot!**\n\nSend me any file, and I will give you a **permanent shareable link** that never expires!"
+HELP_TEXT = "**Here's how to use me:**\n1. Send any file (document, video, photo, audio).\n2. Receive a permanent link.\n3. Click the link to get your file anytime."
 
 # ================= Bot Handlers =================
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     user_name = message.from_user.first_name
 
-    # Check if user clicked /start <file_id> link
     if len(message.command) > 1:
         file_id_str = message.command[1]
         file_record = files_collection.find_one({"_id": file_id_str})
         if not file_record:
-            await message.reply("_🤔 File not found or link expired._", parse_mode="Markdown")
+            await message.reply("**🤔 File not found or link expired.**", parse_mode=ParseMode.MARKDOWN)
             return
 
-        # Check membership
         if not await is_user_member(client, message.from_user.id):
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔗 Join Now", url=f"https://t.me/{UPDATE_CHANNEL}")],
                 [InlineKeyboardButton("✅ I Have Joined", callback_data=f"verify_{file_id_str}")]
             ])
-            await message.reply(f"_👋 Hello {user_name}!\n\nYou must join our update channel to access this file._",
-                                reply_markup=keyboard, parse_mode="Markdown")
+            await message.reply(f"**👋 Hello {user_name}!**\n\nYou must join our update channel to access this file.",
+                                reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
             return
 
-        # If already joined, send file
         log_channel_id = await resolve_channel(client, LOG_CHANNEL)
         if not log_channel_id:
-            await message.reply("_❌ LOG_CHANNEL not resolved. Contact admin._", parse_mode="Markdown")
+            await message.reply("**❌ LOG_CHANNEL not resolved. Contact admin.**", parse_mode=ParseMode.MARKDOWN)
             return
+
         try:
             await client.copy_message(chat_id=message.from_user.id,
                                       from_chat_id=log_channel_id,
                                       message_id=file_record['message_id'])
         except Exception as e:
-            await message.reply(f"_❌ Error sending the file: {e}_", parse_mode="Markdown")
+            await message.reply(f"**❌ Error sending the file: {e}**", parse_mode=ParseMode.MARKDOWN)
         return
 
-    # Normal /start without file link
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")],
         [InlineKeyboardButton("🔗 Join Update Channel", url=f"https://t.me/{UPDATE_CHANNEL}")]
     ])
-    await message.reply(START_TEXT, reply_markup=buttons, parse_mode="Markdown")
+    await message.reply(START_TEXT, reply_markup=buttons, parse_mode=ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex(r"^help$"))
 async def help_callback(client: Client, callback_query: CallbackQuery):
     keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("⬅ Back", callback_data="start_back")]])
-    await callback_query.message.edit_text(HELP_TEXT, reply_markup=keyboard, parse_mode="Markdown")
+    await callback_query.message.edit_text(HELP_TEXT, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
     await callback_query.answer()
 
 @app.on_callback_query(filters.regex(r"^start_back$"))
@@ -128,26 +128,27 @@ async def start_back_callback(client: Client, callback_query: CallbackQuery):
         [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")],
         [InlineKeyboardButton("🔗 Join Update Channel", url=f"https://t.me/{UPDATE_CHANNEL}")]
     ])
-    await callback_query.message.edit_text(START_TEXT, reply_markup=buttons, parse_mode="Markdown")
+    await callback_query.message.edit_text(START_TEXT, reply_markup=buttons, parse_mode=ParseMode.MARKDOWN)
     await callback_query.answer()
 
 @app.on_message(filters.private & (filters.document | filters.video | filters.photo | filters.audio))
 async def file_handler(client: Client, message: Message):
-    status_msg = await message.reply("_⏳ Uploading your file..._", parse_mode="Markdown")
+    status_msg = await message.reply("⏳ Uploading your file...", parse_mode=ParseMode.MARKDOWN)
     try:
         log_channel_id = await resolve_channel(client, LOG_CHANNEL)
         if not log_channel_id:
-            await status_msg.edit_text("_❌ LOG_CHANNEL not resolved. Contact admin._", parse_mode="Markdown")
+            await status_msg.edit_text("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
             return
+
         forwarded = await message.forward(log_channel_id)
         file_id = generate_random_string()
         files_collection.insert_one({"_id": file_id, "message_id": forwarded.id})
         bot_username = (await client.get_me()).username
         share_link = f"https://t.me/{bot_username}?start={file_id}"
-        await status_msg.edit_text(f"_✅ File uploaded!_\n\n🔗 Your permanent link:\n`{share_link}`",
-                                   parse_mode="Markdown", disable_web_page_preview=True)
+        await status_msg.edit_text(f"**✅ File uploaded!**\n\n🔗 Your permanent link:\n`{share_link}`",
+                                   parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
     except Exception as e:
-        await status_msg.edit_text(f"_❌ Error occurred: {e}_", parse_mode="Markdown")
+        await status_msg.edit_text(f"**❌ Error occurred: {e}**", parse_mode=ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex(r"^verify_"))
 async def verify_callback(client: Client, callback_query: CallbackQuery):
@@ -155,12 +156,12 @@ async def verify_callback(client: Client, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
 
     if await is_user_member(client, user_id):
-        await callback_query.answer("_✅ Verified! Sending your file..._", show_alert=True)
+        await callback_query.answer("✅ Verified! Sending your file...", show_alert=True)
         file_record = files_collection.find_one({"_id": file_id})
         if file_record:
             log_channel_id = await resolve_channel(client, LOG_CHANNEL)
             if not log_channel_id:
-                await callback_query.message.edit_text("_❌ LOG_CHANNEL not resolved. Contact admin._", parse_mode="Markdown")
+                await callback_query.message.edit_text("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
                 return
             try:
                 await client.copy_message(chat_id=user_id,
@@ -168,11 +169,11 @@ async def verify_callback(client: Client, callback_query: CallbackQuery):
                                           message_id=file_record['message_id'])
                 await callback_query.message.delete()
             except Exception as e:
-                await callback_query.message.edit_text(f"_❌ Error sending file: {e}_", parse_mode="Markdown")
+                await callback_query.message.edit_text(f"❌ Error sending file: {e}", parse_mode=ParseMode.MARKDOWN)
         else:
-            await callback_query.message.edit_text("_🤔 File not found!_", parse_mode="Markdown")
+            await callback_query.message.edit_text("🤔 File not found!", parse_mode=ParseMode.MARKDOWN)
     else:
-        await callback_query.answer("_❌ You haven't joined yet. Please join and try again._", show_alert=True)
+        await callback_query.answer("❌ You haven't joined yet. Please join and try again.", show_alert=True)
 
 # ================= Start Bot =================
 if __name__ == "__main__":
