@@ -95,7 +95,6 @@ def clear_batch(user_id):
 async def start_handler(client: Client, message: Message):
     user_name = message.from_user.first_name
 
-    # Check if start link has batch/file ID
     if len(message.command) > 1:
         batch_id = message.command[1]
         batch_record = files_collection.find_one({"_id": batch_id})
@@ -116,7 +115,7 @@ async def start_handler(client: Client, message: Message):
             )
             return
 
-        # User already joined → send files immediately
+        # Send files if user joined
         log_channel_id = await resolve_channel(client, LOG_CHANNEL)
         if not log_channel_id:
             await message.reply("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
@@ -131,7 +130,7 @@ async def start_handler(client: Client, message: Message):
                 await message.reply(f"❌ Error sending file: {e}", parse_mode=ParseMode.MARKDOWN)
         return
 
-    # Normal start without batch_id
+    # Normal start
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")],
         [InlineKeyboardButton("🔗 Join Update Channel", url=f"https://t.me/{UPDATE_CHANNEL}")]
@@ -180,9 +179,14 @@ async def verify_callback(client: Client, callback_query: CallbackQuery):
     else:
         await callback_query.answer("❌ You haven't joined yet. Please join and try again.", show_alert=True)
 
-# ================= File Handler (Batch + UI) =================
+# ================= File Handler (Admins Only) =================
 @app.on_message(filters.private & (filters.document | filters.video | filters.photo | filters.audio))
 async def file_handler(client: Client, message: Message):
+    user_id = message.from_user.id
+    if user_id not in ADMINS:
+        await message.reply("❌ Only admins can upload files.", parse_mode=ParseMode.MARKDOWN)
+        return
+
     status_msg = await message.reply("⏳ Uploading your file...", parse_mode=ParseMode.MARKDOWN)
     try:
         log_channel_id = await resolve_channel(client, LOG_CHANNEL)
@@ -191,8 +195,8 @@ async def file_handler(client: Client, message: Message):
             return
 
         forwarded = await message.forward(log_channel_id)
-        add_to_batch(message.from_user.id, forwarded.id)
-        batch_files = get_batch(message.from_user.id)
+        add_to_batch(user_id, forwarded.id)
+        batch_files = get_batch(user_id)
 
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔗 Get Free Link", callback_data="get_free_link")],
@@ -208,6 +212,7 @@ async def file_handler(client: Client, message: Message):
     except Exception as e:
         await status_msg.edit_text(f"❌ Error occurred: {e}", parse_mode=ParseMode.MARKDOWN)
 
+# ================= Callback Queries for Batch =================
 @app.on_callback_query(filters.regex(r"^get_free_link$"))
 async def get_free_link(client: Client, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
