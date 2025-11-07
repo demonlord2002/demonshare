@@ -1,7 +1,6 @@
 import os
 import logging
 import random
-import string
 from dotenv import load_dotenv
 from threading import Thread
 
@@ -42,7 +41,7 @@ ADMINS = [int(a.strip()) for a in ADMIN_IDS_STR.split(",") if a]
 client = MongoClient(MONGO_URI)
 db = client['file_link_bot']
 files_collection = db['files']
-batch_collection = db['batch_sessions']  # For batch sessions
+batch_collection = db['batch_sessions']
 logging.info("✅ MongoDB Connected Successfully!")
 
 # ================= Pyrogram Client =================
@@ -50,7 +49,7 @@ app = Client("PermaStoreBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TO
 
 # ================= Helper Functions =================
 def generate_random_string(length=6):
-    return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
+    return ''.join(random.choices("abcdefghijklmnopqrstuvwxyz0123456789", k=length))
 
 async def resolve_channel(client: Client, channel_identifier: str):
     try:
@@ -73,7 +72,7 @@ async def is_user_member(client: Client, user_id: int) -> bool:
         return False
 
 # ================= Messages =================
-START_TEXT = "**🤖 Welcome to PermaStore Bot!**\n\nSend me any file, and I will give you a **permanent shareable link** that never expires!"
+START_TEXT = "**🤖 Welcome to PermaStore Bot!**\n\nSend me any file, and I will give you a **permanent shareable link**!"
 HELP_TEXT = "**Here's how to use me:**\n1. Send any file (document, video, photo, audio).\n2. Add to batch or get a permanent link.\n3. Click the link to access your files anytime."
 
 # ================= Batch Functions =================
@@ -96,7 +95,7 @@ def clear_batch(user_id):
 async def start_handler(client: Client, message: Message):
     user_name = message.from_user.first_name
 
-    # Handle start with batch_id
+    # Check if start link has batch/file ID
     if len(message.command) > 1:
         batch_id = message.command[1]
         batch_record = files_collection.find_one({"_id": batch_id})
@@ -104,17 +103,20 @@ async def start_handler(client: Client, message: Message):
             await message.reply("❌ File not found or link expired.", parse_mode=ParseMode.MARKDOWN)
             return
 
-        # Force subscription check
+        # Force Subscription
         if not await is_user_member(client, message.from_user.id):
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔗 Join Update Channel", url=f"https://t.me/{UPDATE_CHANNEL}")],
                 [InlineKeyboardButton("✅ I Have Joined", callback_data=f"verify_{batch_id}")]
             ])
-            await message.reply(f"👋 Hello {user_name}!\n\nYou must join our update channel to access this file.",
-                                reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+            await message.reply(
+                f"👋 Hello {user_name}!\n\nYou must join our update channel to access this file.",
+                reply_markup=keyboard,
+                parse_mode=ParseMode.MARKDOWN
+            )
             return
 
-        # Send all files in the batch
+        # User already joined → send files immediately
         log_channel_id = await resolve_channel(client, LOG_CHANNEL)
         if not log_channel_id:
             await message.reply("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
@@ -176,7 +178,7 @@ async def verify_callback(client: Client, callback_query: CallbackQuery):
         else:
             await callback_query.message.edit_text("❌ File not found or expired.", parse_mode=ParseMode.MARKDOWN)
     else:
-        await callback_query.answer("❌ You haven't joined yet.", show_alert=True)
+        await callback_query.answer("❌ You haven't joined yet. Please join and try again.", show_alert=True)
 
 # ================= File Handler (Batch + UI) =================
 @app.on_message(filters.private & (filters.document | filters.video | filters.photo | filters.audio))
@@ -192,7 +194,6 @@ async def file_handler(client: Client, message: Message):
         add_to_batch(message.from_user.id, forwarded.id)
         batch_files = get_batch(message.from_user.id)
 
-        # Vertical button layout
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔗 Get Free Link", callback_data="get_free_link")],
             [InlineKeyboardButton("➕ Add More File", callback_data="add_more_files")],
@@ -200,7 +201,7 @@ async def file_handler(client: Client, message: Message):
         ])
 
         await status_msg.edit_text(
-            f"✅ Batch Updated! You Have {len(batch_files)} file(s) In The Queue. What's Next?",
+            f"✅ Batch Updated! You have {len(batch_files)} file(s) in the queue. What's next?",
             reply_markup=buttons,
             parse_mode=ParseMode.MARKDOWN
         )
@@ -218,7 +219,7 @@ async def get_free_link(client: Client, callback_query: CallbackQuery):
     batch_id = generate_random_string()
     files_collection.insert_one({"_id": batch_id, "message_id": batch_files})
 
-    share_link = f"https://t.me/ElyraMusicBot?start={batch_id}"  # your bot link
+    share_link = f"https://t.me/{(await client.get_me()).username}?start={batch_id}"
 
     await callback_query.message.edit_text(
         f"✅ Free Link Generated for {len(batch_files)} file(s)!\n\n{share_link}",
