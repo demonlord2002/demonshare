@@ -43,7 +43,7 @@ client = MongoClient(MONGO_URI)
 db = client['file_link_bot']
 files_collection = db['files']
 settings_collection = db['settings']
-batch_collection = db['batch_sessions']  # New collection for batch
+batch_collection = db['batch_sessions']  # For batch sessions
 logging.info("✅ MongoDB Connected Successfully!")
 
 # ================= Pyrogram Client =================
@@ -139,21 +139,17 @@ async def file_handler(client: Client, message: Message):
             await status_msg.edit_text("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
             return
 
-        # Forward the file to LOG_CHANNEL
         forwarded = await message.forward(log_channel_id)
         add_to_batch(message.from_user.id, forwarded.id)
         batch_files = get_batch(message.from_user.id)
 
-        # Prepare menu
+        # Vertical button layout
         buttons = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("🔗 Get Free Link", callback_data="get_free_link"),
-                InlineKeyboardButton("➕ Add More Files", callback_data="add_more_files"),
-                InlineKeyboardButton("❌ Close", callback_data="close_batch")
-            ]
+            [InlineKeyboardButton("🔗 Get Free Link", callback_data="get_free_link")],
+            [InlineKeyboardButton("➕ Add More File", callback_data="add_more_files")],
+            [InlineKeyboardButton("❌ Close", callback_data="close_batch")]
         ])
 
-        # Update message with batch info
         await status_msg.edit_text(
             f"✅ Batch Updated! You Have {len(batch_files)} file(s) In The Queue. What's Next?",
             reply_markup=buttons,
@@ -172,12 +168,13 @@ async def get_free_link(client: Client, callback_query: CallbackQuery):
         await callback_query.answer("❌ Your batch is empty!", show_alert=True)
         return
 
-    # Generate random ID for batch
+    # Generate batch ID
     batch_id = generate_random_string()
-    # Store the batch in files_collection as a record
     files_collection.insert_one({"_id": batch_id, "message_id": batch_files})
-    bot_username = (await client.get_me()).username
-    share_link = f"https://permastorepay.blogspot.com?start={batch_id}"
+
+    # Use your bot t.me link format
+    bot_username = "ElyraMusicBot"  # Change here to your bot username
+    share_link = f"https://t.me/{bot_username}?start={batch_id}"
 
     await callback_query.message.edit_text(
         f"✅ Free Link Generated for {len(batch_files)} file(s)!\n\n{share_link}",
@@ -196,7 +193,7 @@ async def close_batch(client: Client, callback_query: CallbackQuery):
     clear_batch(callback_query.from_user.id)
     await callback_query.message.edit_text("❌ Batch closed. All queued files cleared.", parse_mode=ParseMode.MARKDOWN)
     await callback_query.answer()
-    
+
 # ================= Start Bot =================
 if __name__ == "__main__":
     logging.info("Starting Flask web server...")
