@@ -43,6 +43,7 @@ client = MongoClient(MONGO_URI)
 db = client['file_link_bot']
 files_collection = db['files']
 settings_collection = db['settings']
+batch_collection = db['batch_sessions']  # New collection for batch
 logging.info("✅ MongoDB Connected Successfully!")
 
 # ================= Pyrogram Client =================
@@ -83,47 +84,32 @@ HELP_TEXT = (
     "1. **Send Files:** Send me any file, or forward multiple files at once.\n\n"
     "2. **Use the Menu:** After you send a file, a menu will appear:\n"
     "   - 🔗 **Get Free Link:** Creates a permanent link for all files in your batch.\n"
-    "   - ➕ **Add More Files:** Allows you to send more files to the current batch.\n\n"
+    "   - ➕ **Add More Files:** Allows you to send more files to the current batch.\n"
+    "   - ❌ **Close:** Clears current batch.\n\n"
     "**Available Commands:**\n"
     "/start - Restart the bot and clear any session.\n"
     "/editlink - Edit an existing link you created.\n"
     "/help - Show this help message."
 )
 
+# ================= Batch Functions =================
+def get_batch(user_id):
+    session = batch_collection.find_one({"user_id": user_id})
+    return session['files'] if session else []
+
+def add_to_batch(user_id, message_id):
+    session = batch_collection.find_one({"user_id": user_id})
+    if session:
+        batch_collection.update_one({"user_id": user_id}, {"$push": {"files": message_id}})
+    else:
+        batch_collection.insert_one({"user_id": user_id, "files": [message_id]})
+
+def clear_batch(user_id):
+    batch_collection.delete_one({"user_id": user_id})
+
 # ================= Bot Handlers =================
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
-    user_name = message.from_user.first_name
-
-    if len(message.command) > 1:
-        file_id_str = message.command[1]
-        file_record = files_collection.find_one({"_id": file_id_str})
-        if not file_record:
-            await message.reply("**🤔 File not found or link expired.**", parse_mode=ParseMode.MARKDOWN)
-            return
-
-        if not await is_user_member(client, message.from_user.id):
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔗 Join Now", url=f"https://t.me/{UPDATE_CHANNEL}")],
-                [InlineKeyboardButton("✅ I Have Joined", callback_data=f"verify_{file_id_str}")]
-            ])
-            await message.reply(f"**👋 Hello {user_name}!**\n\nYou must join our update channel to access this file.",
-                                reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
-            return
-
-        log_channel_id = await resolve_channel(client, LOG_CHANNEL)
-        if not log_channel_id:
-            await message.reply("**❌ LOG_CHANNEL not resolved. Contact admin.**", parse_mode=ParseMode.MARKDOWN)
-            return
-
-        try:
-            await client.copy_message(chat_id=message.from_user.id,
-                                      from_chat_id=log_channel_id,
-                                      message_id=file_record['message_id'])
-        except Exception as e:
-            await message.reply(f"**❌ Error sending the file: {e}**", parse_mode=ParseMode.MARKDOWN)
-        return
-
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")]
     ])
@@ -143,50 +129,74 @@ async def start_back_callback(client: Client, callback_query: CallbackQuery):
     await callback_query.message.edit_text(START_TEXT, reply_markup=buttons, parse_mode=ParseMode.MARKDOWN)
     await callback_query.answer()
 
+# ================= File Handler with Batch =================
 @app.on_message(filters.private & (filters.document | filters.video | filters.photo | filters.audio))
 async def file_handler(client: Client, message: Message):
-    status_msg = await message.reply("⏳ Uploading your file...", parse_mode=ParseMode.MARKDOWN)
+    status_msg = await message.reply("⏳ Processing your file...", parse_mode=ParseMode.MARKDOWN)
     try:
         log_channel_id = await resolve_channel(client, LOG_CHANNEL)
         if not log_channel_id:
             await status_msg.edit_text("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
             return
 
+        # Forward the file to LOG_CHANNEL
         forwarded = await message.forward(log_channel_id)
-        file_id = generate_random_string()
-        files_collection.insert_one({"_id": file_id, "message_id": forwarded.id})
-        bot_username = (await client.get_me()).username
-        share_link = f"https://t.me/{bot_username}?start={file_id}"
-        await status_msg.edit_text(f"**✅ File uploaded!**\n\n🔗 Your permanent link:\n`{share_link}`",
-                                   parse_mode=ParseMode.MARKDOWN, disable_web_page_preview=True)
+        add_to_batch(message.from_user.id, forwarded.id)
+        batch_files = get_batch(message.from_user.id)
+
+        # Prepare menu
+        buttons = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔗 Get Free Link", callback_data="get_free_link"),
+                InlineKeyboardButton("➕ Add More Files", callback_data="add_more_files"),
+                InlineKeyboardButton("❌ Close", callback_data="close_batch")
+            ]
+        ])
+
+        # Update message with batch info
+        await status_msg.edit_text(
+            f"✅ Batch Updated! You Have {len(batch_files)} file(s) In The Queue. What's Next?",
+            reply_markup=buttons,
+            parse_mode=ParseMode.MARKDOWN
+        )
+
     except Exception as e:
         await status_msg.edit_text(f"**❌ Error occurred: {e}**", parse_mode=ParseMode.MARKDOWN)
 
-@app.on_callback_query(filters.regex(r"^verify_"))
-async def verify_callback(client: Client, callback_query: CallbackQuery):
-    file_id = callback_query.data.split("_")[1]
+# ================= Callback Handlers for Batch =================
+@app.on_callback_query(filters.regex(r"^get_free_link$"))
+async def get_free_link(client: Client, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
+    batch_files = get_batch(user_id)
+    if not batch_files:
+        await callback_query.answer("❌ Your batch is empty!", show_alert=True)
+        return
 
-    if await is_user_member(client, user_id):
-        await callback_query.answer("✅ Verified! Sending your file...", show_alert=True)
-        file_record = files_collection.find_one({"_id": file_id})
-        if file_record:
-            log_channel_id = await resolve_channel(client, LOG_CHANNEL)
-            if not log_channel_id:
-                await callback_query.message.edit_text("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
-                return
-            try:
-                await client.copy_message(chat_id=user_id,
-                                          from_chat_id=log_channel_id,
-                                          message_id=file_record['message_id'])
-                await callback_query.message.delete()
-            except Exception as e:
-                await callback_query.message.edit_text(f"❌ Error sending file: {e}", parse_mode=ParseMode.MARKDOWN)
-        else:
-            await callback_query.message.edit_text("🤔 File not found!", parse_mode=ParseMode.MARKDOWN)
-    else:
-        await callback_query.answer("❌ You haven't joined yet. Please join and try again.", show_alert=True)
+    # Generate random ID for batch
+    batch_id = generate_random_string()
+    # Store the batch in files_collection as a record
+    files_collection.insert_one({"_id": batch_id, "message_id": batch_files})
+    bot_username = (await client.get_me()).username
+    share_link = f"https://permastorepay.blogspot.com?start={batch_id}"
 
+    await callback_query.message.edit_text(
+        f"✅ Free Link Generated for {len(batch_files)} file(s)!\n\n{share_link}",
+        parse_mode=ParseMode.MARKDOWN
+    )
+    clear_batch(user_id)
+    await callback_query.answer()
+
+@app.on_callback_query(filters.regex(r"^add_more_files$"))
+async def add_more_files(client: Client, callback_query: CallbackQuery):
+    await callback_query.message.edit_text("✅ OK! Send me more files to add to your batch.", parse_mode=ParseMode.MARKDOWN)
+    await callback_query.answer()
+
+@app.on_callback_query(filters.regex(r"^close_batch$"))
+async def close_batch(client: Client, callback_query: CallbackQuery):
+    clear_batch(callback_query.from_user.id)
+    await callback_query.message.edit_text("❌ Batch closed. All queued files cleared.", parse_mode=ParseMode.MARKDOWN)
+    await callback_query.answer()
+    
 # ================= Start Bot =================
 if __name__ == "__main__":
     logging.info("Starting Flask web server...")
