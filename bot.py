@@ -73,8 +73,22 @@ async def is_user_member(client: Client, user_id: int) -> bool:
         return False
 
 # ================= Messages =================
-START_TEXT = "**🤖 Welcome to PermaStore Bot!**\n\nSend me any file, and I will give you a **permanent shareable link** that never expires!"
-HELP_TEXT = "**Here's how to use me:**\n1. Send any file (document, video, photo, audio).\n2. Receive a permanent link.\n3. Click the link to get your file anytime."
+START_TEXT = (
+    "**PermaStore Bot 🤖**\n\n"
+    "Send me any file and I'll give you a **permanent shareable link** that never expires."
+)
+
+HELP_TEXT = (
+    "**Here's how to use me:**\n\n"
+    "1. **Send Files:** Send me any file, or forward multiple files at once.\n\n"
+    "2. **Use the Menu:** After you send a file, a menu will appear:\n"
+    "   - 🔗 **Get Free Link:** Creates a permanent link for all files in your batch.\n"
+    "   - ➕ **Add More Files:** Allows you to send more files to the current batch.\n\n"
+    "**Available Commands:**\n"
+    "/start - Restart the bot and clear any session.\n"
+    "/editlink - Edit an existing link you created.\n"
+    "/help - Show this help message."
+)
 
 # ================= Bot Handlers =================
 @app.on_message(filters.command("start") & filters.private)
@@ -111,8 +125,7 @@ async def start_handler(client: Client, message: Message):
         return
 
     buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")],
-        [InlineKeyboardButton("🔗 Join Update Channel", url=f"https://t.me/{UPDATE_CHANNEL}")]
+        [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")]
     ])
     await message.reply(START_TEXT, reply_markup=buttons, parse_mode=ParseMode.MARKDOWN)
 
@@ -125,8 +138,7 @@ async def help_callback(client: Client, callback_query: CallbackQuery):
 @app.on_callback_query(filters.regex(r"^start_back$"))
 async def start_back_callback(client: Client, callback_query: CallbackQuery):
     buttons = InlineKeyboardMarkup([
-        [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")],
-        [InlineKeyboardButton("🔗 Join Update Channel", url=f"https://t.me/{UPDATE_CHANNEL}")]
+        [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")]
     ])
     await callback_query.message.edit_text(START_TEXT, reply_markup=buttons, parse_mode=ParseMode.MARKDOWN)
     await callback_query.answer()
