@@ -4,13 +4,13 @@ import random
 import string
 from dotenv import load_dotenv
 from pyrogram import Client, filters
-from pyrogram.errors import UserNotParticipant, PeerIdInvalid, ChatAdminRequired
+from pyrogram.errors import UserNotParticipant
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
 from pymongo import MongoClient
 from flask import Flask
 from threading import Thread
 
-# ================= Flask Web Server (Keep Bot Alive) =================
+# ================= Flask Web Server =================
 flask_app = Flask(__name__)
 
 @flask_app.route('/')
@@ -35,199 +35,131 @@ LOG_CHANNEL = os.environ.get("LOG_CHANNEL")  # can be numeric ID or username
 UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL")  # must be username without @
 
 ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
-ADMINS = [int(admin_id.strip()) for admin_id in ADMIN_IDS_STR.split(',') if admin_id]
+ADMINS = [int(a) for a in ADMIN_IDS_STR.split(",") if a]
 
 # ================= MongoDB Setup =================
-try:
-    client = MongoClient(MONGO_URI)
-    db = client['file_link_bot']
-    files_collection = db['files']
-    settings_collection = db['settings']
-    logging.info("MongoDB Connected Successfully!")
-except Exception as e:
-    logging.error(f"Error connecting to MongoDB: {e}")
-    exit()
+client = MongoClient(MONGO_URI)
+db = client['file_link_bot']
+files_collection = db['files']
+settings_collection = db['settings']
+logging.info("MongoDB Connected Successfully!")
 
 # ================= Pyrogram Client =================
-app = Client("FileLinkBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+app = Client("PermaStoreBot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # ================= Helper Functions =================
-def generate_random_string(length=6):
+def generate_random_string(length=8):
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
 async def resolve_channel(client: Client, channel_identifier: str):
-    """
-    Resolves a channel that can be either numeric ID or public username.
-    Returns numeric ID if resolved, else None.
-    """
+    if str(channel_identifier).startswith("-100") or str(channel_identifier).isdigit():
+        return int(channel_identifier)
     try:
-        if str(channel_identifier).startswith("-100") or str(channel_identifier).isdigit():
-            return int(channel_identifier)
         chat = await client.get_chat(channel_identifier)
         return chat.id
-    except Exception as e:
-        logging.error(f"Failed to resolve channel '{channel_identifier}': {e}")
+    except:
         return None
 
 async def is_user_member(client: Client, user_id: int) -> bool:
-    """
-    Check if a user is member of the UPDATE_CHANNEL.
-    """
     try:
         await client.get_chat_member(chat_id=f"@{UPDATE_CHANNEL}", user_id=user_id)
         return True
     except UserNotParticipant:
         return False
-    except Exception as e:
-        logging.error(f"Error checking membership for {user_id}: {e}")
+    except:
         return False
 
 async def get_bot_mode() -> str:
-    """
-    Fetch bot mode from MongoDB, default is 'public'.
-    """
     setting = settings_collection.find_one({"_id": "bot_mode"})
     if setting:
         return setting.get("mode", "public")
     settings_collection.update_one({"_id": "bot_mode"}, {"$set": {"mode": "public"}}, upsert=True)
     return "public"
 
+# ================= Start / Help Messages =================
+START_TEXT = """*PermaStore Bot* 🤖
+
+Hey! I am PermaStore Bot.
+
+Send me any file and I will give you a *permanent shareable link* which never expires!
+"""
+
+HELP_TEXT = """*Here's how to use me:*
+
+1. Send Files: Send me any file, or forward multiple files at once.
+
+2. Use the Menu: After you send a file, a menu will appear:
+   - 🔗 *Get Free Link*: Creates a permanent link for all files in your batch.
+   - ➕ *Add More Files*: Allows you to send more files to the current batch.
+
+*Available Commands:*
+/start - Restart the bot and clear any session.
+/editlink - Edit an existing link you created.
+/help - Show this help message.
+"""
+
 # ================= Bot Handlers =================
 @app.on_message(filters.command("start") & filters.private)
 async def start_handler(client: Client, message: Message):
     user_name = message.from_user.first_name
-    if len(message.command) > 1:
-        file_id_str = message.command[1]
+    buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")],
+        [InlineKeyboardButton("🔗 Join Now", url=f"https://t.me/{UPDATE_CHANNEL}")]
+    ])
+    await message.reply(START_TEXT, reply_markup=buttons, parse_mode="markdown")
 
-        if not await is_user_member(client, message.from_user.id):
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔗 Join Channel", url=f"https://t.me/{UPDATE_CHANNEL}")],
-                [InlineKeyboardButton("✅ I Have Joined", callback_data=f"check_join_{file_id_str}")]
-            ])
-            await message.reply(
-                f"👋 Hello, {user_name}!\n\nTo access this file, please join our update channel first.",
-                reply_markup=keyboard
-            )
-            return
+@app.on_callback_query(filters.regex(r"^help$"))
+async def help_callback(client: Client, callback_query: CallbackQuery):
+    buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("⬅ Back to Start", callback_data="start_back")]
+    ])
+    await callback_query.message.edit_text(HELP_TEXT, reply_markup=buttons, parse_mode="markdown")
+    await callback_query.answer()
 
-        file_record = files_collection.find_one({"_id": file_id_str})
-        if file_record:
-            log_channel_id = await resolve_channel(client, LOG_CHANNEL)
-            if not log_channel_id:
-                await message.reply("❌ LOG_CHANNEL not resolved. Contact admin.")
-                return
-            try:
-                await client.copy_message(chat_id=message.from_user.id,
-                                          from_chat_id=log_channel_id,
-                                          message_id=file_record['message_id'])
-            except Exception as e:
-                await message.reply(f"❌ Error sending the file.\n`Error: {e}`")
-        else:
-            await message.reply("🤔 File not found or link expired.")
-    else:
-        await message.reply(
-            "Hello! I am a File-to-Link bot.\n\nSend me any file, and I will generate a shareable link for you."
-        )
+@app.on_callback_query(filters.regex(r"^start_back$"))
+async def start_back_callback(client: Client, callback_query: CallbackQuery):
+    buttons = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")],
+        [InlineKeyboardButton("🔗 Join Now", url=f"https://t.me/{UPDATE_CHANNEL}")]
+    ])
+    await callback_query.message.edit_text(START_TEXT, reply_markup=buttons, parse_mode="markdown")
+    await callback_query.answer()
 
 @app.on_message(filters.private & (filters.document | filters.video | filters.photo | filters.audio))
 async def file_handler(client: Client, message: Message):
-    bot_mode = await get_bot_mode()
-    if bot_mode == "private" and message.from_user.id not in ADMINS:
-        await message.reply("😔 Sorry! Only Admins can upload files right now.")
+    user_id = message.from_user.id
+    if not await is_user_member(client, user_id):
+        buttons = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔗 Join Channel", url=f"https://t.me/{UPDATE_CHANNEL}")],
+            [InlineKeyboardButton("✅ I Have Joined", callback_data="verify_join")]
+        ])
+        await message.reply("You must join the update channel first!", reply_markup=buttons)
         return
 
-    status_msg = await message.reply("⏳ Please wait, uploading the file...", quote=True)
-
+    status_msg = await message.reply("⏳ Uploading your file...", quote=True)
     try:
         log_channel_id = await resolve_channel(client, LOG_CHANNEL)
-        if not log_channel_id:
-            await status_msg.edit_text("❌ LOG_CHANNEL not resolved. Contact admin.")
-            return
-
-        forwarded_message = await message.forward(log_channel_id)
-        file_id_str = generate_random_string()
-        files_collection.insert_one({'_id': file_id_str, 'message_id': forwarded_message.id})
+        forwarded = await message.forward(log_channel_id)
+        file_id = generate_random_string()
+        files_collection.insert_one({'_id': file_id, 'message_id': forwarded.id})
         bot_username = (await client.get_me()).username
-        share_link = f"https://t.me/{bot_username}?start={file_id_str}"
-        await status_msg.edit_text(
-            f"✅ Link Generated Successfully!\n\n🔗 Your Link: `{share_link}`",
-            disable_web_page_preview=True
-        )
+        share_link = f"https://t.me/{bot_username}?start={file_id}"
+        await status_msg.edit_text(f"✅ File uploaded successfully!\n\n🔗 Permanent Link: `{share_link}`", parse_mode="markdown")
     except Exception as e:
-        logging.error(f"File handling error: {e}")
-        await status_msg.edit_text(f"❌ Error occurred. Please try again.\n`Details: {e}`")
+        await status_msg.edit_text(f"❌ Error: {e}")
 
-@app.on_message(filters.command("settings") & filters.private)
-async def settings_handler(client: Client, message: Message):
-    if message.from_user.id not in ADMINS:
-        await message.reply("❌ You do not have permission to use this command.")
-        return
-
-    current_mode = await get_bot_mode()
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌍 Public (Anyone)", callback_data="set_mode_public")],
-        [InlineKeyboardButton("🔒 Private (Admins Only)", callback_data="set_mode_private")]
-    ])
-    await message.reply(
-        f"⚙️ Bot Settings\n\nCurrent file upload mode: **{current_mode.upper()}**\n\n"
-        "**Public:** Anyone can upload files.\n"
-        "**Private:** Only admins can upload files.\n\n"
-        "Select a new mode:",
-        reply_markup=keyboard
-    )
-
-@app.on_callback_query(filters.regex(r"^set_mode_"))
-async def set_mode_callback(client: Client, callback_query: CallbackQuery):
-    if callback_query.from_user.id not in ADMINS:
-        await callback_query.answer("Permission Denied!", show_alert=True)
-        return
-
-    new_mode = callback_query.data.split("_")[2]
-    settings_collection.update_one({"_id": "bot_mode"}, {"$set": {"mode": new_mode}}, upsert=True)
-    await callback_query.answer(f"Mode set to {new_mode.upper()}!", show_alert=True)
-
-    keyboard = InlineKeyboardMarkup([
-        [InlineKeyboardButton("🌍 Public (Anyone)", callback_data="set_mode_public")],
-        [InlineKeyboardButton("🔒 Private (Admins Only)", callback_data="set_mode_private")]
-    ])
-    await callback_query.message.edit_text(
-        f"⚙️ Bot Settings\n\n✅ File upload mode is now **{new_mode.upper()}**.\n\nSelect a new mode:",
-        reply_markup=keyboard
-    )
-
-@app.on_callback_query(filters.regex(r"^check_join_"))
-async def check_join_callback(client: Client, callback_query: CallbackQuery):
+@app.on_callback_query(filters.regex(r"^verify_join$"))
+async def verify_join_callback(client: Client, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
-    file_id_str = callback_query.data.split("_", 2)[2]
-
     if await is_user_member(client, user_id):
-        await callback_query.answer("Thanks for joining! Sending your file...", show_alert=True)
-        file_record = files_collection.find_one({"_id": file_id_str})
-        if file_record:
-            log_channel_id = await resolve_channel(client, LOG_CHANNEL)
-            if not log_channel_id:
-                await callback_query.message.edit_text("❌ LOG_CHANNEL not resolved. Contact admin.")
-                return
-            try:
-                await client.copy_message(chat_id=user_id,
-                                          from_chat_id=log_channel_id,
-                                          message_id=file_record['message_id'])
-                await callback_query.message.delete()
-            except Exception as e:
-                await callback_query.message.edit_text(f"❌ Error sending file.\n`Error: {e}`")
-        else:
-            await callback_query.message.edit_text("🤔 File not found!")
+        await callback_query.answer("✅ Verified! You can now send your file.", show_alert=True)
+        await callback_query.message.delete()
     else:
-        await callback_query.answer("You haven't joined the channel yet. Please join and try again.", show_alert=True)
+        await callback_query.answer("❌ You haven't joined yet. Join first!", show_alert=True)
 
 # ================= Start Bot =================
 if __name__ == "__main__":
-    if not ADMINS:
-        logging.warning("WARNING: ADMIN_IDS is not set. Settings command will not work.")
-
-    logging.info("Starting Flask web server...")
-    flask_thread = Thread(target=run_flask)
-    flask_thread.start()
-
-    logging.info("Bot is starting...")
+    logging.info("Starting Flask server...")
+    Thread(target=run_flask).start()
+    logging.info("Bot starting...")
     app.run()
