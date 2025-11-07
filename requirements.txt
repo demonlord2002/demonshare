@@ -1,5 +1,5 @@
-pyrogram==2.0.106
-tgcrypto==1.2.2
+pyrogram
+tgcrypto
 pymongo[srv]==4.5.0
 python-dotenv==1.0.0
 flask==2.3.3
