@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from pyrogram import Client, filters
 from pyrogram.errors import UserNotParticipant
 from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message, CallbackQuery
+from pyrogram.enums import ParseMode  # ✅ Added
 from pymongo import MongoClient
 from flask import Flask
 from threading import Thread
@@ -31,8 +32,8 @@ API_ID = int(os.environ.get("API_ID"))
 API_HASH = os.environ.get("API_HASH")
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 MONGO_URI = os.environ.get("MONGO_URI")
-LOG_CHANNEL = os.environ.get("LOG_CHANNEL")  # Numeric ID or username
-UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL")  # username without @
+LOG_CHANNEL = os.environ.get("LOG_CHANNEL")
+UPDATE_CHANNEL = os.environ.get("UPDATE_CHANNEL")
 
 ADMIN_IDS_STR = os.environ.get("ADMIN_IDS", "")
 ADMINS = [int(a) for a in ADMIN_IDS_STR.split(",") if a]
@@ -102,14 +103,14 @@ async def start_handler(client: Client, message: Message):
         [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")],
         [InlineKeyboardButton("🔗 Join Now", url=f"https://t.me/{UPDATE_CHANNEL}")]
     ])
-    await message.reply(START_TEXT, reply_markup=buttons, parse_mode="markdown")
+    await message.reply(START_TEXT, reply_markup=buttons, parse_mode=ParseMode.MARKDOWN)
 
 @app.on_callback_query(filters.regex(r"^help$"))
 async def help_callback(client: Client, callback_query: CallbackQuery):
     buttons = InlineKeyboardMarkup([
         [InlineKeyboardButton("⬅ Back to Start", callback_data="start_back")]
     ])
-    await callback_query.message.edit_text(HELP_TEXT, reply_markup=buttons, parse_mode="markdown")
+    await callback_query.message.edit_text(HELP_TEXT, reply_markup=buttons, parse_mode=ParseMode.MARKDOWN)
     await callback_query.answer()
 
 @app.on_callback_query(filters.regex(r"^start_back$"))
@@ -118,7 +119,7 @@ async def start_back_callback(client: Client, callback_query: CallbackQuery):
         [InlineKeyboardButton("📖 How to Use / Help", callback_data="help")],
         [InlineKeyboardButton("🔗 Join Now", url=f"https://t.me/{UPDATE_CHANNEL}")]
     ])
-    await callback_query.message.edit_text(START_TEXT, reply_markup=buttons, parse_mode="markdown")
+    await callback_query.message.edit_text(START_TEXT, reply_markup=buttons, parse_mode=ParseMode.MARKDOWN)
     await callback_query.answer()
 
 @app.on_message(filters.private & (filters.document | filters.video | filters.photo | filters.audio))
@@ -140,7 +141,10 @@ async def file_handler(client: Client, message: Message):
         files_collection.insert_one({'_id': file_id, 'message_id': forwarded.id})
         bot_username = (await client.get_me()).username
         share_link = f"https://t.me/{bot_username}?start={file_id}"
-        await status_msg.edit_text(f"✅ File uploaded successfully!\n\n🔗 Permanent Link: {escape_markdown(share_link)}", parse_mode="markdown")
+        await status_msg.edit_text(
+            f"✅ File uploaded successfully!\n\n🔗 Permanent Link: {escape_markdown(share_link)}",
+            parse_mode=ParseMode.MARKDOWN
+        )
     except Exception as e:
         await status_msg.edit_text(f"❌ Error: {e}")
 
