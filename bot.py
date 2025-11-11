@@ -3,6 +3,7 @@ import logging
 import random
 from dotenv import load_dotenv
 from threading import Thread
+import asyncio
 
 from pyrogram import Client, filters
 from pyrogram.errors import UserNotParticipant
@@ -75,6 +76,12 @@ async def is_user_member(client: Client, user_id: int) -> bool:
 START_TEXT = "**🤖 Welcome to PermaStore Bot!**\n\nSend me any file, and I will give you a **permanent shareable link**!"
 HELP_TEXT = "**Here's how to use me:**\n1. Send any file (document, video, photo, audio).\n2. Add to batch or get a permanent link.\n3. Click the link to access your files anytime."
 
+NOTICE_TEXT = (
+    "❗️ **IMPORTANT NOTICE** ❗️\n\n"
+    "This file will be deleted in 10 minutes ⏰ due to copyright policies.\n"
+    "Please save or forward it to your Saved Messages to avoid losing it."
+)
+
 # ================= Batch Functions =================
 def get_batch(user_id):
     session = batch_collection.find_one({"user_id": user_id})
@@ -89,6 +96,24 @@ def add_to_batch(user_id, message_id):
 
 def clear_batch(user_id):
     batch_collection.delete_one({"user_id": user_id})
+
+# ================= Send File + Notice + Auto Delete =================
+async def send_file_with_notice(client: Client, user_id: int, from_chat_id: int, message_id: int):
+    try:
+        sent_msg = await client.copy_message(chat_id=user_id, from_chat_id=from_chat_id, message_id=message_id)
+        notice = await sent_msg.reply_text(NOTICE_TEXT, parse_mode=ParseMode.MARKDOWN)
+        # Delete both after 10 minutes (600 seconds)
+        await asyncio.sleep(600)
+        try:
+            await sent_msg.delete()
+        except Exception:
+            pass
+        try:
+            await notice.delete()
+        except Exception:
+            pass
+    except Exception as e:
+        logging.error(f"Error sending/deleting file: {e}")
 
 # ================= Start Handler (Force Sub + File Link) =================
 @app.on_message(filters.command("start") & filters.private)
@@ -122,12 +147,7 @@ async def start_handler(client: Client, message: Message):
             return
 
         for msg_id in batch_record["message_id"]:
-            try:
-                await client.copy_message(chat_id=message.from_user.id,
-                                          from_chat_id=log_channel_id,
-                                          message_id=msg_id)
-            except Exception as e:
-                await message.reply(f"❌ Error sending file: {e}", parse_mode=ParseMode.MARKDOWN)
+            asyncio.create_task(send_file_with_notice(client, message.from_user.id, log_channel_id, msg_id))
         return
 
     # Normal start
@@ -167,12 +187,7 @@ async def verify_callback(client: Client, callback_query: CallbackQuery):
                 await callback_query.message.edit_text("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
                 return
             for msg_id in batch_record["message_id"]:
-                try:
-                    await client.copy_message(chat_id=user_id,
-                                              from_chat_id=log_channel_id,
-                                              message_id=msg_id)
-                except Exception as e:
-                    await callback_query.message.edit_text(f"❌ Error sending file: {e}", parse_mode=ParseMode.MARKDOWN)
+                asyncio.create_task(send_file_with_notice(client, user_id, log_channel_id, msg_id))
             await callback_query.message.delete()
         else:
             await callback_query.message.edit_text("❌ File not found or expired.", parse_mode=ParseMode.MARKDOWN)
