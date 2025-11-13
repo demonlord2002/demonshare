@@ -97,29 +97,34 @@ def add_to_batch(user_id, message_id):
 def clear_batch(user_id):
     batch_collection.delete_one({"user_id": user_id})
 
-# ================= Send File + Single Notice + Auto Delete =================
+# ================= Send Batch + Notice Last + Auto Delete =================
 async def send_batch_with_notice(client: Client, user_id: int, from_chat_id: int, message_ids: list):
-    notice_sent = False
-    notice_msg = None
     try:
+        sent_message_ids = []
+
+        # 1️⃣ Send all files first
         for msg_id in message_ids:
-            sent_msg = await client.copy_message(chat_id=user_id, from_chat_id=from_chat_id, message_id=msg_id)
-            # Send notice only once per batch
-            if not notice_sent:
-                notice_msg = await sent_msg.reply_text(NOTICE_TEXT, parse_mode=ParseMode.MARKDOWN)
-                notice_sent = True
-        # Delete all after 10 minutes
+            try:
+                sent_msg = await client.copy_message(chat_id=user_id, from_chat_id=from_chat_id, message_id=msg_id)
+                if sent_msg:
+                    sent_message_ids.append(sent_msg.message_id)
+            except Exception as e:
+                logging.error(f"Failed to copy message {msg_id}: {e}")
+
+        # 2️⃣ Send NOTICE last
+        notice_msg = await client.send_message(chat_id=user_id, text=NOTICE_TEXT, parse_mode=ParseMode.MARKDOWN)
+        sent_message_ids.append(notice_msg.message_id)
+
+        # 3️⃣ Wait 10 minutes asynchronously
         await asyncio.sleep(600)
-        for msg_id in message_ids:
+
+        # 4️⃣ Delete all messages safely
+        if sent_message_ids:
             try:
-                await client.delete_messages(chat_id=user_id, message_ids=msg_id)
+                await client.delete_messages(chat_id=user_id, message_ids=sent_message_ids)
             except Exception:
                 pass
-        if notice_msg:
-            try:
-                await notice_msg.delete()
-            except Exception:
-                pass
+
     except Exception as e:
         logging.error(f"Error sending/deleting batch: {e}")
 
