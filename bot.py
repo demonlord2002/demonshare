@@ -78,8 +78,8 @@ HELP_TEXT = "**Here's how to use me:**\n1. Send any file (document, video, photo
 
 NOTICE_TEXT = (
     "❗️ **IMPORTANT NOTICE** ❗️\n\n"
-    "This file will be deleted in 10 minutes ⏰ due to copyright policies.\n"
-    "Please save or forward it to your Saved Messages to avoid losing it."
+    "These files will be deleted in 10 minutes ⏰ due to copyright policies.\n"
+    "Please save or forward them to your Saved Messages to avoid losing them."
 )
 
 # ================= Batch Functions =================
@@ -97,23 +97,31 @@ def add_to_batch(user_id, message_id):
 def clear_batch(user_id):
     batch_collection.delete_one({"user_id": user_id})
 
-# ================= Send File + Notice + Auto Delete =================
-async def send_file_with_notice(client: Client, user_id: int, from_chat_id: int, message_id: int):
+# ================= Send File + Single Notice + Auto Delete =================
+async def send_batch_with_notice(client: Client, user_id: int, from_chat_id: int, message_ids: list):
+    notice_sent = False
+    notice_msg = None
     try:
-        sent_msg = await client.copy_message(chat_id=user_id, from_chat_id=from_chat_id, message_id=message_id)
-        notice = await sent_msg.reply_text(NOTICE_TEXT, parse_mode=ParseMode.MARKDOWN)
-        # Delete both after 10 minutes (600 seconds)
+        for msg_id in message_ids:
+            sent_msg = await client.copy_message(chat_id=user_id, from_chat_id=from_chat_id, message_id=msg_id)
+            # Send notice only once per batch
+            if not notice_sent:
+                notice_msg = await sent_msg.reply_text(NOTICE_TEXT, parse_mode=ParseMode.MARKDOWN)
+                notice_sent = True
+        # Delete all after 10 minutes
         await asyncio.sleep(600)
-        try:
-            await sent_msg.delete()
-        except Exception:
-            pass
-        try:
-            await notice.delete()
-        except Exception:
-            pass
+        for msg_id in message_ids:
+            try:
+                await client.delete_messages(chat_id=user_id, message_ids=msg_id)
+            except Exception:
+                pass
+        if notice_msg:
+            try:
+                await notice_msg.delete()
+            except Exception:
+                pass
     except Exception as e:
-        logging.error(f"Error sending/deleting file: {e}")
+        logging.error(f"Error sending/deleting batch: {e}")
 
 # ================= Start Handler (Force Sub + File Link) =================
 @app.on_message(filters.command("start") & filters.private)
@@ -140,14 +148,13 @@ async def start_handler(client: Client, message: Message):
             )
             return
 
-        # Send files if user joined
+        # Send batch if user joined
         log_channel_id = await resolve_channel(client, LOG_CHANNEL)
         if not log_channel_id:
             await message.reply("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
             return
 
-        for msg_id in batch_record["message_id"]:
-            asyncio.create_task(send_file_with_notice(client, message.from_user.id, log_channel_id, msg_id))
+        asyncio.create_task(send_batch_with_notice(client, message.from_user.id, log_channel_id, batch_record["message_id"]))
         return
 
     # Normal start
@@ -186,8 +193,7 @@ async def verify_callback(client: Client, callback_query: CallbackQuery):
             if not log_channel_id:
                 await callback_query.message.edit_text("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
                 return
-            for msg_id in batch_record["message_id"]:
-                asyncio.create_task(send_file_with_notice(client, user_id, log_channel_id, msg_id))
+            asyncio.create_task(send_batch_with_notice(client, user_id, log_channel_id, batch_record["message_id"]))
             await callback_query.message.delete()
         else:
             await callback_query.message.edit_text("❌ File not found or expired.", parse_mode=ParseMode.MARKDOWN)
