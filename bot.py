@@ -3,7 +3,6 @@ import logging
 import random
 from dotenv import load_dotenv
 from threading import Thread
-import asyncio
 
 from pyrogram import Client, filters
 from pyrogram.errors import UserNotParticipant
@@ -75,11 +74,6 @@ async def is_user_member(client: Client, user_id: int) -> bool:
 # ================= Messages =================
 START_TEXT = "**🤖 Welcome to PermaStore Bot!**\n\nSend me any file, and I will give you a **permanent shareable link**!"
 HELP_TEXT = "**Here's how to use me:**\n1. Send any file (document, video, photo, audio).\n2. Add to batch or get a permanent link.\n3. Click the link to access your files anytime."
-NOTICE_TEXT = (
-    "❗️ **IMPORTANT NOTICE** ❗️\n\n"
-    "These files will be deleted in 10 minutes ⏰ due to copyright policies.\n"
-    "Please save or forward them to your Saved Messages to avoid losing them."
-)
 
 # ================= Batch Functions =================
 def get_batch(user_id):
@@ -95,41 +89,6 @@ def add_to_batch(user_id, message_id):
 
 def clear_batch(user_id):
     batch_collection.delete_one({"user_id": user_id})
-
-# ================= Send Batch + Notice Last + Auto Delete =================
-async def send_batch_with_notice(client: Client, user_id: int, from_chat_id: int, message_ids: list):
-    sent_message_ids = []
-
-    # 1️⃣ Send all files first
-    for msg_id in message_ids:
-        try:
-            sent_msg = await client.copy_message(chat_id=user_id, from_chat_id=from_chat_id, message_id=msg_id)
-            if sent_msg:
-                sent_message_ids.append(sent_msg.message_id)
-            else:
-                logging.warning(f"Message {msg_id} could not be copied.")
-        except Exception as e:
-            logging.error(f"Failed to copy message {msg_id}: {e}")
-
-    # 2️⃣ Send NOTICE last
-    try:
-        notice_msg = await client.send_message(chat_id=user_id, text=NOTICE_TEXT, parse_mode=ParseMode.MARKDOWN)
-        sent_message_ids.append(notice_msg.message_id)
-    except Exception as e:
-        logging.error(f"Failed to send NOTICE: {e}")
-
-    # 3️⃣ Async wait for 10 minutes in small intervals
-    total = 600  # 10 minutes
-    interval = 5  # 5 seconds chunks
-    for _ in range(total // interval):
-        await asyncio.sleep(interval)
-
-    # 4️⃣ Delete all messages safely
-    if sent_message_ids:
-        try:
-            await client.delete_messages(chat_id=user_id, message_ids=sent_message_ids)
-        except Exception as e:
-            logging.error(f"Failed to delete batch messages: {e}")
 
 # ================= Start Handler (Force Sub + File Link) =================
 @app.on_message(filters.command("start") & filters.private)
@@ -156,13 +115,19 @@ async def start_handler(client: Client, message: Message):
             )
             return
 
-        # Send batch if user joined
+        # Send files if user joined
         log_channel_id = await resolve_channel(client, LOG_CHANNEL)
         if not log_channel_id:
             await message.reply("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
             return
 
-        asyncio.create_task(send_batch_with_notice(client, message.from_user.id, log_channel_id, batch_record["message_id"]))
+        for msg_id in batch_record["message_id"]:
+            try:
+                await client.copy_message(chat_id=message.from_user.id,
+                                          from_chat_id=log_channel_id,
+                                          message_id=msg_id)
+            except Exception as e:
+                await message.reply(f"❌ Error sending file: {e}", parse_mode=ParseMode.MARKDOWN)
         return
 
     # Normal start
@@ -201,7 +166,13 @@ async def verify_callback(client: Client, callback_query: CallbackQuery):
             if not log_channel_id:
                 await callback_query.message.edit_text("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
                 return
-            asyncio.create_task(send_batch_with_notice(client, user_id, log_channel_id, batch_record["message_id"]))
+            for msg_id in batch_record["message_id"]:
+                try:
+                    await client.copy_message(chat_id=user_id,
+                                              from_chat_id=log_channel_id,
+                                              message_id=msg_id)
+                except Exception as e:
+                    await callback_query.message.edit_text(f"❌ Error sending file: {e}", parse_mode=ParseMode.MARKDOWN)
             await callback_query.message.delete()
         else:
             await callback_query.message.edit_text("❌ File not found or expired.", parse_mode=ParseMode.MARKDOWN)
