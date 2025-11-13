@@ -1,6 +1,7 @@
 import os
 import logging
 import random
+import asyncio
 from dotenv import load_dotenv
 from threading import Thread
 
@@ -75,6 +76,8 @@ async def is_user_member(client: Client, user_id: int) -> bool:
 START_TEXT = "**🤖 Welcome to PermaStore Bot!**\n\nSend me any file, and I will give you a **permanent shareable link**!"
 HELP_TEXT = "**Here's how to use me:**\n1. Send any file (document, video, photo, audio).\n2. Add to batch or get a permanent link.\n3. Click the link to access your files anytime."
 
+NOTICE_TEXT = "‼️ IMPORTANT NOTICE ‼️\n\nThese files will be deleted in 10 minutes ⏰ due to copyright policies.\nPlease save or forward them to your Saved Messages to avoid losing them."
+
 # ================= Batch Functions =================
 def get_batch(user_id):
     session = batch_collection.find_one({"user_id": user_id})
@@ -89,6 +92,32 @@ def add_to_batch(user_id, message_id):
 
 def clear_batch(user_id):
     batch_collection.delete_one({"user_id": user_id})
+
+# ================= Send Files with Auto-Delete =================
+async def send_files_with_notice(client: Client, user_id: int, message_ids: list):
+    log_channel_id = await resolve_channel(client, LOG_CHANNEL)
+    if not log_channel_id:
+        return await client.send_message(user_id, "❌ LOG_CHANNEL not resolved. Contact admin.")
+
+    sent_messages = []
+    for msg_id in message_ids:
+        try:
+            sent = await client.copy_message(chat_id=user_id, from_chat_id=log_channel_id, message_id=msg_id)
+            sent_messages.append(sent)
+        except Exception as e:
+            await client.send_message(user_id, f"❌ Error sending file: {e}")
+
+    if sent_messages:
+        notice_msg = await client.send_message(user_id, NOTICE_TEXT)
+        sent_messages.append(notice_msg)
+
+        # Auto delete after 10 minutes
+        await asyncio.sleep(600)  # 600 seconds = 10 minutes
+        for msg in sent_messages:
+            try:
+                await msg.delete()
+            except:
+                pass
 
 # ================= Start Handler (Force Sub + File Link) =================
 @app.on_message(filters.command("start") & filters.private)
@@ -116,18 +145,7 @@ async def start_handler(client: Client, message: Message):
             return
 
         # Send files if user joined
-        log_channel_id = await resolve_channel(client, LOG_CHANNEL)
-        if not log_channel_id:
-            await message.reply("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
-            return
-
-        for msg_id in batch_record["message_id"]:
-            try:
-                await client.copy_message(chat_id=message.from_user.id,
-                                          from_chat_id=log_channel_id,
-                                          message_id=msg_id)
-            except Exception as e:
-                await message.reply(f"❌ Error sending file: {e}", parse_mode=ParseMode.MARKDOWN)
+        await send_files_with_notice(client, message.from_user.id, batch_record["message_id"])
         return
 
     # Normal start
@@ -162,17 +180,7 @@ async def verify_callback(client: Client, callback_query: CallbackQuery):
         await callback_query.answer("✅ Verified! Sending your file...", show_alert=True)
         batch_record = files_collection.find_one({"_id": batch_id})
         if batch_record:
-            log_channel_id = await resolve_channel(client, LOG_CHANNEL)
-            if not log_channel_id:
-                await callback_query.message.edit_text("❌ LOG_CHANNEL not resolved. Contact admin.", parse_mode=ParseMode.MARKDOWN)
-                return
-            for msg_id in batch_record["message_id"]:
-                try:
-                    await client.copy_message(chat_id=user_id,
-                                              from_chat_id=log_channel_id,
-                                              message_id=msg_id)
-                except Exception as e:
-                    await callback_query.message.edit_text(f"❌ Error sending file: {e}", parse_mode=ParseMode.MARKDOWN)
+            await send_files_with_notice(client, user_id, batch_record["message_id"])
             await callback_query.message.delete()
         else:
             await callback_query.message.edit_text("❌ File not found or expired.", parse_mode=ParseMode.MARKDOWN)
@@ -230,6 +238,9 @@ async def get_free_link(client: Client, callback_query: CallbackQuery):
         f"✅ Free Link Generated for {len(batch_files)} file(s)!\n\n{share_link}",
         parse_mode=ParseMode.MARKDOWN
     )
+
+    # Send files with auto-delete notice immediately
+    await send_files_with_notice(client, user_id, batch_files)
     clear_batch(user_id)
     await callback_query.answer()
 
