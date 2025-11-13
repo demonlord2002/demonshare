@@ -99,27 +99,31 @@ def clear_batch(user_id):
 
 # ================= Send File + Single Notice + Auto Delete =================
 async def send_batch_with_notice(client: Client, user_id: int, from_chat_id: int, message_ids: list):
-    notice_sent = False
-    notice_msg = None
     try:
+        # 1️⃣ Send the NOTICE first
+        notice_msg = await client.send_message(chat_id=user_id, text=NOTICE_TEXT, parse_mode=ParseMode.MARKDOWN)
+        
+        # 2️⃣ Send all files after notice
+        sent_messages = []
         for msg_id in message_ids:
             sent_msg = await client.copy_message(chat_id=user_id, from_chat_id=from_chat_id, message_id=msg_id)
-            # Send notice only once per batch
-            if not notice_sent:
-                notice_msg = await sent_msg.reply_text(NOTICE_TEXT, parse_mode=ParseMode.MARKDOWN)
-                notice_sent = True
-        # Delete all after 10 minutes
+            sent_messages.append(sent_msg.message_id)
+        
+        # 3️⃣ Wait 10 minutes then delete all files + notice
         await asyncio.sleep(600)
-        for msg_id in message_ids:
-            try:
-                await client.delete_messages(chat_id=user_id, message_ids=msg_id)
-            except Exception:
-                pass
-        if notice_msg:
-            try:
-                await notice_msg.delete()
-            except Exception:
-                pass
+        
+        # Delete files
+        try:
+            await client.delete_messages(chat_id=user_id, message_ids=sent_messages)
+        except Exception:
+            pass
+        
+        # Delete notice
+        try:
+            await notice_msg.delete()
+        except Exception:
+            pass
+
     except Exception as e:
         logging.error(f"Error sending/deleting batch: {e}")
 
@@ -186,7 +190,7 @@ async def verify_callback(client: Client, callback_query: CallbackQuery):
     user_id = callback_query.from_user.id
 
     if await is_user_member(client, user_id):
-        await callback_query.answer("✅ Verified! Sending your file...", show_alert=True)
+        await callback_query.answer("✅ Verified! Sending your files...", show_alert=True)
         batch_record = files_collection.find_one({"_id": batch_id})
         if batch_record:
             log_channel_id = await resolve_channel(client, LOG_CHANNEL)
