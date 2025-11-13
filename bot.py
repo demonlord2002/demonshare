@@ -75,7 +75,6 @@ async def is_user_member(client: Client, user_id: int) -> bool:
 # ================= Messages =================
 START_TEXT = "**🤖 Welcome to PermaStore Bot!**\n\nSend me any file, and I will give you a **permanent shareable link**!"
 HELP_TEXT = "**Here's how to use me:**\n1. Send any file (document, video, photo, audio).\n2. Add to batch or get a permanent link.\n3. Click the link to access your files anytime."
-
 NOTICE_TEXT = (
     "❗️ **IMPORTANT NOTICE** ❗️\n\n"
     "These files will be deleted in 10 minutes ⏰ due to copyright policies.\n"
@@ -119,7 +118,7 @@ async def send_batch_with_notice(client: Client, user_id: int, from_chat_id: int
     except Exception as e:
         logging.error(f"Failed to send NOTICE: {e}")
 
-    # 3️⃣ Async-safe wait for 10 minutes in small intervals
+    # 3️⃣ Async wait for 10 minutes in small intervals
     total = 600  # 10 minutes
     interval = 5  # 5 seconds chunks
     for _ in range(total // interval):
@@ -131,7 +130,6 @@ async def send_batch_with_notice(client: Client, user_id: int, from_chat_id: int
             await client.delete_messages(chat_id=user_id, message_ids=sent_message_ids)
         except Exception as e:
             logging.error(f"Failed to delete batch messages: {e}")
-
 
 # ================= Start Handler (Force Sub + File Link) =================
 @app.on_message(filters.command("start") & filters.private)
