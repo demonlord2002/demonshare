@@ -99,30 +99,27 @@ def clear_batch(user_id):
 
 # ================= Send File + Single Notice + Auto Delete =================
 async def send_batch_with_notice(client: Client, user_id: int, from_chat_id: int, message_ids: list):
+    notice_sent = False
+    notice_msg = None
     try:
-        # Send notice first
-        notice_msg = await client.send_message(chat_id=user_id, text=NOTICE_TEXT, parse_mode=ParseMode.MARKDOWN)
-        
-        # Send all files after notice
-        sent_messages = []
         for msg_id in message_ids:
             sent_msg = await client.copy_message(chat_id=user_id, from_chat_id=from_chat_id, message_id=msg_id)
-            sent_messages.append(sent_msg.message_id)
-        
-        # Delete all after 10 minutes (600 seconds)
+            # Send notice only once per batch
+            if not notice_sent:
+                notice_msg = await sent_msg.reply_text(NOTICE_TEXT, parse_mode=ParseMode.MARKDOWN)
+                notice_sent = True
+        # Delete all after 10 minutes
         await asyncio.sleep(600)
-        
-        # Delete files
-        try:
-            await client.delete_messages(chat_id=user_id, message_ids=sent_messages)
-        except Exception:
-            pass
-        
-        # Delete notice
-        try:
-            await notice_msg.delete()
-        except Exception:
-            pass
+        for msg_id in message_ids:
+            try:
+                await client.delete_messages(chat_id=user_id, message_ids=msg_id)
+            except Exception:
+                pass
+        if notice_msg:
+            try:
+                await notice_msg.delete()
+            except Exception:
+                pass
     except Exception as e:
         logging.error(f"Error sending/deleting batch: {e}")
 
